@@ -1,8 +1,11 @@
 {
   "extends": "./../ts/tsconfig.json",
   "include": [
-    "**/*.ts"
+    "**/*.ts",
+    "./index.ts"
   ],
+  "compilerOptions": {
+  },
   "files": [
     "./../ts/index.d.ts"
   ],

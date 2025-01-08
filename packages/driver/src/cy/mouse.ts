@@ -1,13 +1,20 @@
-// @ts-nocheck
 import $ from 'jquery'
 import _ from 'lodash'
 import $dom from '../dom'
 import $elements from '../dom/elements'
-import $Keyboard from './keyboard'
+import $Keyboard, { Keyboard, ModifiersEventOptions } from './keyboard'
 import $selection from '../dom/selection'
 import debugFn from 'debug'
+import type { StateFunc } from '../cypress/state'
+import type { IFocused } from './focused'
+import type { ICypress } from '../cypress'
+import type { ElViewportPostion } from '../dom/coordinates'
 
 const debug = debugFn('cypress:driver:mouse')
+
+export type ForceEl = false | HTMLElement
+
+export type MouseCoords = { x?: number, y?: number}
 
 /**
  * @typedef Coords
@@ -16,7 +23,7 @@ const debug = debugFn('cypress:driver:mouse')
  * @property {Document} doc
  */
 
-const getLastHoveredEl = (state) => {
+const getLastHoveredEl = (state: StateFunc): HTMLElement | null => {
   let lastHoveredEl = state('mouseLastHoveredEl')
   const lastHoveredElAttached = lastHoveredEl && $elements.isAttachedEl(lastHoveredEl)
 
@@ -38,12 +45,21 @@ const defaultPointerDownUpOptions = {
   pressure: 0.5,
 }
 
-const getMouseCoords = (state) => {
+const getMouseCoords = (state: StateFunc) => {
   return state('mouseCoords')
 }
 
-const create = (state, keyboard, focused, Cypress) => {
+type DefaultMouseOptions = ModifiersEventOptions & CoordsEventOptions & {
+  view: Window
+  composed: boolean
+  relatedTarget: HTMLElement | null
+}
+
+export const create = (state: StateFunc, keyboard: Keyboard, focused: IFocused, Cypress: ICypress) => {
   const isFirefox = Cypress.browser.family === 'firefox'
+  const isWebKit = Cypress.isBrowser('webkit')
+  // Chromium 116+ allows the simulated events to be sent to disabled elements so we need to explicitly exclude them
+  const isChromium116OrLater = Cypress.isBrowser({ family: 'chromium' }) && Cypress.browserMajorVersion() >= 116
 
   const sendPointerEvent = (el, evtOptions, evtName, bubbles = false, cancelable = false) => {
     const constructor = el.ownerDocument.defaultView.PointerEvent
@@ -59,14 +75,14 @@ const create = (state, keyboard, focused, Cypress) => {
   }
 
   const sendPointerup = (el, evtOptions) => {
-    if (isFirefox && el.disabled) {
+    if ((isFirefox || isWebKit) && el.disabled) {
       return {}
     }
 
     return sendPointerEvent(el, evtOptions, 'pointerup', true, true)
   }
-  const sendPointerdown = (el, evtOptions) => {
-    if (isFirefox && el.disabled) {
+  const sendPointerdown = (el, evtOptions): {} | SentEvent => {
+    if ((isFirefox || isWebKit) && el.disabled) {
       return {}
     }
 
@@ -75,7 +91,7 @@ const create = (state, keyboard, focused, Cypress) => {
   const sendPointermove = (el, evtOptions) => {
     return sendPointerEvent(el, evtOptions, 'pointermove', true, true)
   }
-  const sendPointerover = (el, evtOptions) => {
+  const sendPointerover = (el, evtOptions: DefaultMouseOptions) => {
     return sendPointerEvent(el, evtOptions, 'pointerover', true, true)
   }
   const sendPointerenter = (el, evtOptions) => {
@@ -89,14 +105,14 @@ const create = (state, keyboard, focused, Cypress) => {
   }
 
   const sendMouseup = (el, evtOptions) => {
-    if (isFirefox && el.disabled) {
+    if ((isFirefox || isWebKit || isChromium116OrLater) && el.disabled) {
       return {}
     }
 
     return sendMouseEvent(el, evtOptions, 'mouseup', true, true)
   }
-  const sendMousedown = (el, evtOptions) => {
-    if (isFirefox && el.disabled) {
+  const sendMousedown = (el, evtOptions): {} | SentEvent => {
+    if ((isFirefox || isWebKit || isChromium116OrLater) && el.disabled) {
       return {}
     }
 
@@ -105,7 +121,7 @@ const create = (state, keyboard, focused, Cypress) => {
   const sendMousemove = (el, evtOptions) => {
     return sendMouseEvent(el, evtOptions, 'mousemove', true, true)
   }
-  const sendMouseover = (el, evtOptions) => {
+  const sendMouseover = (el, evtOptions: DefaultMouseOptions) => {
     return sendMouseEvent(el, evtOptions, 'mouseover', true, true)
   }
   const sendMouseenter = (el, evtOptions) => {
@@ -117,23 +133,23 @@ const create = (state, keyboard, focused, Cypress) => {
   const sendMouseout = (el, evtOptions) => {
     return sendMouseEvent(el, evtOptions, 'mouseout', true, true)
   }
-  const sendClick = (el, evtOptions, opts = {}) => {
+  const sendClick = (el, evtOptions, opts: { force?: boolean } = {}) => {
     // send the click event if firefox and force (needed for force check checkbox)
-    if (!opts.force && isFirefox && el.disabled) {
+    if (!opts.force && (isFirefox || isWebKit || isChromium116OrLater) && el.disabled) {
       return {}
     }
 
     return sendMouseEvent(el, evtOptions, 'click', true, true)
   }
   const sendDblclick = (el, evtOptions) => {
-    if (isFirefox && el.disabled) {
+    if ((isFirefox || isWebKit || isChromium116OrLater) && el.disabled) {
       return {}
     }
 
     return sendMouseEvent(el, evtOptions, 'dblclick', true, true)
   }
   const sendContextmenu = (el, evtOptions) => {
-    if (isFirefox && el.disabled) {
+    if ((isFirefox || isWebKit || isChromium116OrLater) && el.disabled) {
       return {}
     }
 
@@ -154,7 +170,7 @@ const create = (state, keyboard, focused, Cypress) => {
     return !_.isEqual(xy(fromElViewport), xy(coords))
   }
 
-  const shouldMoveCursorToEndAfterMousedown = (el) => {
+  const shouldMoveCursorToEndAfterMousedown = (el: HTMLElement) => {
     const _debug = debug.extend(':shouldMoveCursorToEnd')
 
     _debug('shouldMoveToEnd?', el)
@@ -182,7 +198,7 @@ const create = (state, keyboard, focused, Cypress) => {
   }
 
   const mouse = {
-    _getDefaultMouseOptions (x, y, win) {
+    _getDefaultMouseOptions (x, y, win): DefaultMouseOptions {
       const _activeModifiers = keyboard.getActiveModifiers()
       const modifiersEventOptions = $Keyboard.toModifiersEventOptions(_activeModifiers)
       const coordsEventOptions = toCoordsEventOptions(x, y, win)
@@ -197,11 +213,7 @@ const create = (state, keyboard, focused, Cypress) => {
       }, modifiersEventOptions, coordsEventOptions)
     },
 
-    /**
-     * @param {Coords} coords
-     * @param {HTMLElement} forceEl
-     */
-    move (fromElViewport, forceEl) {
+    move (fromElViewport: ElViewportPostion, forceEl?: ForceEl) {
       debug('mouse.move', fromElViewport)
 
       const lastHoveredEl = getLastHoveredEl(state)
@@ -233,7 +245,7 @@ const create = (state, keyboard, focused, Cypress) => {
      * - send move events to elToHover (bubbles)
      * - elLastHovered = elToHover
      */
-    _moveEvents (el, coords) {
+    _moveEvents (el: HTMLElement, coords: ElViewportPostion) {
       // events are not fired on disabled elements, so we don't have to take that into account
       const win = $dom.getWindowByElement(el)
       const { x, y } = coords
@@ -259,16 +271,21 @@ const create = (state, keyboard, focused, Cypress) => {
           skipped: formatReasonNotFired('Already on Coordinates'),
         }
       }
+
+      type EventFunc =
+        | (() => { skipped: string })
+        | (() => SentEvent)
+
       let pointerout = _.noop
       let pointerleave = _.noop
-      let pointerover = notFired
+      let pointerover: EventFunc = notFired
       let pointerenter = _.noop
       let mouseout = _.noop
       let mouseleave = _.noop
-      let mouseover = notFired
+      let mouseover: EventFunc = notFired
       let mouseenter = _.noop
-      let pointermove = notFired
-      let mousemove = notFired
+      let pointermove: EventFunc = notFired
+      let mousemove: EventFunc = notFired
 
       const lastHoveredEl = getLastHoveredEl(state)
 
@@ -285,9 +302,9 @@ const create = (state, keyboard, focused, Cypress) => {
           sendMouseout(lastHoveredEl, _.extend({}, defaultMouseOptions, { relatedTarget: el }))
         }
 
-        let curParent = lastHoveredEl
+        let curParent: Node | null = lastHoveredEl
 
-        const elsToSendMouseleave = []
+        const elsToSendMouseleave: Node[] = []
 
         while (curParent && curParent.ownerDocument && curParent !== commonAncestor) {
           elsToSendMouseleave.push(curParent)
@@ -317,8 +334,8 @@ const create = (state, keyboard, focused, Cypress) => {
             return sendPointerover(el, _.extend({}, defaultPointerOptions, { relatedTarget: lastHoveredEl }))
           }
 
-          let curParent = el
-          const elsToSendMouseenter = []
+          let curParent: Node | null = el
+          const elsToSendMouseenter: Node[] = []
 
           while (curParent && curParent.ownerDocument && curParent !== commonAncestor) {
             elsToSendMouseenter.push(curParent)
@@ -349,7 +366,8 @@ const create = (state, keyboard, focused, Cypress) => {
         return sendMousemove(el, defaultMouseOptions)
       }
 
-      const events = []
+      // TODO: make `type` below more specific.
+      const events: Array<ReturnType<EventFunc> & { type: string }> = []
 
       pointerout()
       pointerleave()
@@ -372,7 +390,7 @@ const create = (state, keyboard, focused, Cypress) => {
      * @param {Coords} coords
      * @returns {HTMLElement}
      */
-    getElAtCoords ({ x, y, doc }) {
+    getElAtCoords ({ x, y, doc }: ElViewportPostion) {
       const el = $dom.elementFromPoint(doc, x, y)
 
       return el
@@ -419,7 +437,7 @@ const create = (state, keyboard, focused, Cypress) => {
       let pointerdown = sendPointerdown(
         el,
         pointerEvtOptions,
-      )
+      ) as Partial<SentEvent>
 
       const pointerdownPrevented = pointerdown.preventedDefault
       const elIsDetached = $elements.isDetachedEl(el)
@@ -461,7 +479,7 @@ const create = (state, keyboard, focused, Cypress) => {
       // el we just send pointerdown
       const el = mouseDownPhase.targetEl
 
-      if (mouseDownPhase.events.pointerdown.preventedDefault || mouseDownPhase.events.mousedown.preventedDefault || !$elements.isAttachedEl(el)) {
+      if (mouseDownPhase.events.pointerdown.preventedDefault || (mouseDownPhase.events.mousedown as Partial<SentEvent>).preventedDefault || !$elements.isAttachedEl(el)) {
         return mouseDownPhase
       }
 
@@ -488,6 +506,8 @@ const create = (state, keyboard, focused, Cypress) => {
 
       if (shouldMoveCursorToEndAfterMousedown(el)) {
         debug('moveSelectionToEnd due to click', el)
+        // It's a curried function, so the 2 arguments are valid.
+        // @ts-ignore
         $selection.moveSelectionToEnd(el, { onlyIfEmptySelection: true })
       }
 
@@ -532,7 +552,7 @@ const create = (state, keyboard, focused, Cypress) => {
 
       const mouseDownPhase = mouse.down(fromElViewport, forceEl, pointerEvtOptionsExtend, mouseEvtOptionsExtend)
 
-      const skipMouseupEvent = mouseDownPhase.events.pointerdown.skipped || mouseDownPhase.events.pointerdown.preventedDefault
+      const skipMouseupEvent = mouseDownPhase.events.pointerdown.preventedDefault
 
       const mouseUpPhase = mouse.up(fromElViewport, forceEl, skipMouseupEvent, pointerEvtOptionsExtend, mouseEvtOptionsExtend)
 
@@ -545,6 +565,21 @@ const create = (state, keyboard, focused, Cypress) => {
         // Only send click event if mousedown element is not detached.
         if ($elements.isDetachedEl(mouseDownPhase.targetEl) || $elements.isDetached(mouseUpPhase.targetEl)) {
           return { skipClickEventReason: 'element was detached' }
+        }
+
+        // Only send click event if element is not disabled.
+        // First find an parent element that can actually be disabled
+        const findParentThatCanBeDisabled = (el: HTMLElement): HTMLElement | null => {
+          const elementsThatCanBeDisabled = ['button', 'input', 'select', 'textarea', 'optgroup', 'option', 'fieldset']
+
+          return elementsThatCanBeDisabled.includes($elements.getTagName(el)) ? el : null
+        }
+
+        const parentThatCanBeDisabled = $elements.findParent(mouseUpPhase.targetEl, findParentThatCanBeDisabled) || $elements.findParent(mouseDownPhase.targetEl, findParentThatCanBeDisabled)
+
+        // Then check if parent is indeed disabled
+        if (parentThatCanBeDisabled !== null && $elements.isDisabled($(parentThatCanBeDisabled))) {
+          return { skipClickEventReason: 'element was disabled' }
         }
 
         const commonAncestor = mouseUpPhase.targetEl &&
@@ -638,7 +673,7 @@ const create = (state, keyboard, focused, Cypress) => {
       return { click }
     },
 
-    _contextmenuEvent (fromElViewport, forceEl, mouseEvtOptionsExtend) {
+    _contextmenuEvent (fromElViewport, forceEl, mouseEvtOptionsExtend?) {
       const el = forceEl || mouse.moveToCoords(fromElViewport)
 
       const win = $dom.getWindowByElement(el)
@@ -695,7 +730,7 @@ const create = (state, keyboard, focused, Cypress) => {
 
       const contextmenuEvent = mouse._contextmenuEvent(fromElViewport, forceEl)
 
-      const skipMouseupEvent = mouseDownPhase.events.pointerdown.skipped || mouseDownPhase.events.pointerdown.preventedDefault
+      const skipMouseupEvent = mouseDownPhase.events.pointerdown.preventedDefault
       const mouseUpPhase = mouse.up(fromElViewport, forceEl, skipMouseupEvent, pointerEvtOptionsExtend, mouseEvtOptionsExtend)
 
       const clickEvents = _.extend({}, mouseDownPhase.events, mouseUpPhase.events)
@@ -709,7 +744,14 @@ const create = (state, keyboard, focused, Cypress) => {
 
 const { stopPropagation } = window.MouseEvent.prototype
 
-const sendEvent = (evtName, el, evtOptions, bubbles = false, cancelable = false, Constructor, composed = false) => {
+type SentEvent = {
+  stoppedPropagation: boolean
+  preventedDefault: boolean
+  el: HTMLElement
+  modifiers: string
+}
+
+const sendEvent = (evtName, el, evtOptions, bubbles = false, cancelable = false, Constructor, composed = false): SentEvent => {
   evtOptions = _.extend({}, evtOptions, { bubbles, cancelable })
   const _eventModifiers = $Keyboard.fromModifierEventOptions(evtOptions)
   const modifiers = $Keyboard.modifiersToString(_eventModifiers)
@@ -720,6 +762,9 @@ const sendEvent = (evtName, el, evtOptions, bubbles = false, cancelable = false,
     evt.stopPropagation = function (...args) {
       evt._hasStoppedPropagation = true
 
+      // stopPropagation doesn't have any arguments. So, we cannot type-safely pass the second argument.
+      // But we're passing it just in case.
+      // @ts-ignore
       return stopPropagation.apply(this, ...args)
     }
   }
@@ -738,6 +783,19 @@ const sendEvent = (evtName, el, evtOptions, bubbles = false, cancelable = false,
 
 const formatReasonNotFired = (reason) => {
   return `⚠️ not fired (${reason})`
+}
+
+type CoordsEventOptions = {
+  x: number
+  y: number
+  clientX: number
+  clientY: number
+  screenX: number
+  screenY: number
+  pageX: number
+  pageY: number
+  layerX: number
+  layerY: number
 }
 
 const toCoordsEventOptions = (x, y, win) => {
@@ -759,6 +817,4 @@ const toCoordsEventOptions = (x, y, win) => {
   }
 }
 
-export default {
-  create,
-}
+export interface Mouse extends ReturnType<typeof create> {}

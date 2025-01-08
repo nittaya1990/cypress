@@ -3,16 +3,35 @@ import $window from './window'
 import $elements from './elements'
 import $jquery from './jquery'
 
-const getElementAtPointFromViewport = (doc, x, y) => {
+const getElementAtPointFromViewport = (doc: Document, x: number, y: number) => {
   return $elements.elementFromPoint(doc, x, y)
 }
 
-const isAutIframe = (win) => {
+const isAUTFrame = (win) => {
   const parent = win.parent
 
   // https://github.com/cypress-io/cypress/issues/6412
   // ensure the parent is a Window before checking prop
-  return $window.isWindow(parent) && !$elements.getNativeProp(parent, 'frameElement')
+  if (!$window.isWindow(parent)) {
+    return false
+  }
+
+  try {
+    // window.frameElement only exists on iframe windows, so if it doesn't
+    // exist on parent, it must be the top frame, and `win` is the AUT
+    return !$elements.getNativeProp(parent, 'frameElement')
+  } catch (err) {
+    // if the AUT is cross-origin, accessing parent.frameElement will throw
+    // a cross-origin error, meaning this is the AUT
+    // NOTE: this will need to be updated once we add support for
+    // cross-origin iframes
+    if (err.name !== 'SecurityError') {
+      // re-throw any error that's not a cross-origin error
+      throw err
+    }
+
+    return true
+  }
 }
 
 const getFirstValidSizedRect = (el) => {
@@ -22,13 +41,48 @@ const getFirstValidSizedRect = (el) => {
   }) || el.getBoundingClientRect() // otherwise fall back to the parent client rect
 }
 
-/**
- * @param {JQuery<HTMLElement> | HTMLElement} $el
- */
-const getElementPositioning = ($el) => {
+export type ElViewportPostion = {
+  doc: Document
+  x?: number
+  y?: number
+  top: number
+  left: number
+  right: number
+  bottom: number
+  topCenter: number
+  leftCenter: number
+}
+
+export type ElWindowPostion = {
+  x?: number
+  y?: number
+  top: number
+  left: number
+  topCenter: number
+  leftCenter: number
+}
+
+export type ElementPositioning = {
+  scrollTop: number
+  scrollLeft: number
+  width: number
+  height: number
+  fromElViewport: ElViewportPostion
+  fromElWindow: ElWindowPostion
+  fromAutWindow: {
+    x?: number
+    y?: number
+    top: number
+    left: number
+    topCenter: number
+    leftCenter: number
+  }
+}
+
+const getElementPositioning = ($el: JQuery<HTMLElement> | HTMLElement): ElementPositioning => {
   let autFrame
 
-  const el = $jquery.isJquery($el) ? $el[0] : $el
+  const el: HTMLElement = $jquery.isJquery($el) ? $el[0] : $el
 
   const win = $window.getWindowByElement(el)
 
@@ -63,7 +117,7 @@ const getElementPositioning = ($el) => {
     // https://github.com/cypress-io/cypress/issues/6412
     // ensure the parent is a Window before checking prop
     // walk up from a nested iframe so we continually add the x + y values
-    while ($window.isWindow(curWindow) && !isAutIframe(curWindow) && curWindow.parent !== curWindow) {
+    while ($window.isWindow(curWindow) && !isAUTFrame(curWindow) && curWindow.parent !== curWindow) {
       frame = $elements.getNativeProp(curWindow, 'frameElement')
 
       if (curWindow && frame) {
@@ -128,7 +182,12 @@ const getElementPositioning = ($el) => {
   }
 }
 
-const getCoordsByPosition = (left, top, xPosition = 'center', yPosition = 'center') => {
+const getCoordsByPosition = (
+  left: number,
+  top: number,
+  xPosition: 'left' | 'center' | 'right' = 'center',
+  yPosition: 'top' | 'center' | 'bottom' = 'center',
+) => {
   const getLeft = () => {
     /* eslint-disable default-case */
     switch (xPosition) {
@@ -335,4 +394,6 @@ export default {
   getElementCoordinatesByPosition,
 
   getElementCoordinatesByPositionRelativeToXY,
+
+  isAUTFrame,
 }

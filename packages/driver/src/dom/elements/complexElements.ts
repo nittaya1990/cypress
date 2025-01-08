@@ -139,14 +139,21 @@ export const isFocusable = ($el: JQuery<HTMLElement>) => {
 
 export const isFocusedOrInFocused = (el: HTMLElement) => {
   debug('isFocusedOrInFocus', el)
-
   const doc = $document.getDocumentFromElement(el)
 
   if (!doc.hasFocus()) {
     return false
   }
 
-  const { activeElement } = doc
+  let root: Document | ShadowRoot
+
+  if (isWithinShadowRoot(el)) {
+    root = el.getRootNode() as ShadowRoot
+  } else {
+    root = doc
+  }
+
+  let { activeElement } = root
 
   let elToCheckCurrentlyFocused
 
@@ -283,6 +290,13 @@ export const isScrollable = ($el) => {
     return false
   }
 
+  // If we're at the documentElement, we check its size against the window
+  const documentElement = $document.getDocumentFromElement(el).documentElement
+
+  if (el === documentElement) {
+    return checkDocumentElement($window.getWindowByElement(el), el)
+  }
+
   // if we're any other element, we do some css calculations
   // to see that the overflow is correct and the scroll
   // area is larger than the actual height or width
@@ -314,7 +328,7 @@ export const isScrollable = ($el) => {
 /**
  * Getters where DOM state like focus, styling, and actionability affect the return value
  */
-export const getFirstFixedOrStickyPositionParent = ($el) => {
+export const getFirstFixedOrStickyPositionParent = ($el): JQuery<any> | null => {
   if (isUndefinedOrHTMLBodyDoc($el)) {
     return null
   }

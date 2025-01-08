@@ -1,4 +1,3 @@
-// @ts-nocheck
 import _ from 'lodash'
 import $utils from './utils'
 import $errUtils from './error_utils'
@@ -8,7 +7,7 @@ const _isBrowser = (browser, matcher, errPrefix) => {
   let exclusive = false
 
   const matchWithExclusion = (objValue, srcValue) => {
-    if (srcValue.startsWith('!')) {
+    if (_.isString(srcValue) && srcValue.startsWith('!')) {
       exclusive = true
 
       return objValue !== srcValue.slice(1)
@@ -36,12 +35,15 @@ const _isBrowser = (browser, matcher, errPrefix) => {
   }
 }
 
-const isBrowser = (config, obj = '', errPrefix = '`Cypress.isBrowser()`') => {
+const isBrowser = (config, obj: Cypress.IsBrowserMatcher = '', errPrefix: string = '`Cypress.isBrowser()`') => {
   return _
   .chain(obj)
   .concat([])
   .map((matcher) => _isBrowser(config.browser, matcher, errPrefix))
-  .reduce((a, b) => {
+  .reduce((
+    a: null | { isMatch: boolean, exclusive: boolean },
+    b: { isMatch: boolean, exclusive: boolean },
+  ) => {
     if (!a) return b
 
     if (a.exclusive && b.exclusive) {
@@ -66,5 +68,6 @@ export default (config) => {
   return {
     browser: config.browser,
     isBrowser: _.partial(isBrowser, config),
+    browserMajorVersion: () => config.browser.majorVersion,
   }
 }

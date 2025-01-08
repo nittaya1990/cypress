@@ -1,5 +1,5 @@
 const _ = require('lodash')
-const R = require('ramda')
+const arch = require('arch')
 const os = require('os')
 const ospath = require('ospath')
 const crypto = require('crypto')
@@ -7,7 +7,7 @@ const la = require('lazy-ass')
 const is = require('check-more-types')
 const tty = require('tty')
 const path = require('path')
-const isCi = require('is-ci')
+const isCi = require('ci-info').isCI
 const execa = require('execa')
 const getos = require('getos')
 const chalk = require('chalk')
@@ -18,10 +18,11 @@ const executable = require('executable')
 const { stripIndent } = require('common-tags')
 const supportsColor = require('supports-color')
 const isInstalledGlobally = require('is-installed-globally')
-const pkg = require(path.join(__dirname, '..', 'package.json'))
 const logger = require('./logger')
 const debug = require('debug')('cypress:cli')
 const fs = require('./fs')
+
+const pkg = require(path.join(__dirname, '..', 'package.json'))
 
 const issuesUrl = 'https://github.com/cypress-io/cypress/issues'
 
@@ -114,10 +115,9 @@ const logBrokenGtkDisplayWarning = () => {
 }
 
 function stdoutLineMatches (expectedLine, stdout) {
-  const lines = stdout.split('\n').map(R.trim)
-  const lineMatches = R.equals(expectedLine)
+  const lines = stdout.split('\n').map((val) => val.trim())
 
-  return lines.some(lineMatches)
+  return lines.some((line) => line === expectedLine)
 }
 
 /**
@@ -133,7 +133,7 @@ function isValidCypressInternalEnvValue (value) {
     return true
   }
 
-  // names of config environments, see "packages/server/config/app.yml"
+  // names of config environments, see "packages/server/config/app.json"
   const names = ['development', 'test', 'staging', 'production']
 
   return _.includes(names, value)
@@ -191,18 +191,22 @@ const dequote = (str) => {
 
 const parseOpts = (opts) => {
   opts = _.pick(opts,
+    'autoCancelAfterFailures',
     'browser',
     'cachePath',
     'cacheList',
     'cacheClear',
     'cachePrune',
     'ciBuildId',
+    'ct',
+    'component',
     'config',
     'configFile',
     'cypressVersion',
     'destination',
     'detached',
     'dev',
+    'e2e',
     'exit',
     'env',
     'force',
@@ -210,6 +214,8 @@ const parseOpts = (opts) => {
     'group',
     'headed',
     'headless',
+    'inspect',
+    'inspectBrk',
     'key',
     'path',
     'parallel',
@@ -219,6 +225,7 @@ const parseOpts = (opts) => {
     'reporter',
     'reporterOptions',
     'record',
+    'runnerUi',
     'runProject',
     'spec',
     'tag')
@@ -229,11 +236,14 @@ const parseOpts = (opts) => {
 
   // some options might be quoted - which leads to unexpected results
   // remove double quotes from certain options
-  const removeQuotes = {
-    group: dequote,
-    ciBuildId: dequote,
+  const cleanOpts = { ...opts }
+  const toDequote = ['group', 'ciBuildId']
+
+  for (const prop of toDequote) {
+    if (_.has(opts, prop)) {
+      cleanOpts[prop] = dequote(opts[prop])
+    }
   }
-  const cleanOpts = R.evolve(removeQuotes, opts)
 
   debug('parsed cli options %o', cleanOpts)
 
@@ -248,12 +258,16 @@ const getApplicationDataFolder = (...paths) => {
   const { env } = process
 
   // allow overriding the app_data folder
-  const folder = env.CYPRESS_KONFIG_ENV || env.CYPRESS_INTERNAL_ENV || 'development'
+  let folder = env.CYPRESS_CONFIG_ENV || env.CYPRESS_INTERNAL_ENV || 'development'
 
   const PRODUCT_NAME = pkg.productName || pkg.name
   const OS_DATA_PATH = ospath.data()
 
   const ELECTRON_APP_DATA_PATH = path.join(OS_DATA_PATH, PRODUCT_NAME)
+
+  if (process.env.CYPRESS_INTERNAL_E2E_TESTING_SELF) {
+    folder = `${folder}-e2e-test`
+  }
 
   const p = path.join(ELECTRON_APP_DATA_PATH, 'cy', folder, ...paths)
 
@@ -280,18 +294,18 @@ const util = {
     .mapValues((value) => { // stringify to 1 or 0
       return value ? '1' : '0'
     })
-    .extend(util.getOriginalNodeOptions(options))
+    .extend(util.getOriginalNodeOptions())
     .value()
   },
 
-  getOriginalNodeOptions (options) {
+  getOriginalNodeOptions () {
+    const opts = {}
+
     if (process.env.NODE_OPTIONS) {
-      return {
-        ORIGINAL_NODE_OPTIONS: process.env.NODE_OPTIONS,
-      }
+      opts.ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS
     }
 
-    return {}
+    return opts
   },
 
   getForceTty () {
@@ -317,7 +331,7 @@ const util = {
   },
 
   supportsColor () {
-    // if we've been explictly told not to support
+    // if we've been explicitly told not to support
     // color then turn this off
     if (process.env.NO_COLOR) {
       return false
@@ -335,6 +349,10 @@ const util = {
 
   cwd () {
     return process.cwd()
+  },
+
+  pkgBuildInfo () {
+    return pkg.buildInfo
   },
 
   pkgVersion () {
@@ -427,13 +445,62 @@ const util = {
     })
   },
 
-  getPlatformInfo () {
-    return util.getOsVersionAsync().then((version) => {
-      return stripIndent`
-        Platform: ${os.platform()} (${version})
-        Cypress Version: ${util.pkgVersion()}
-      `
-    })
+  async getPlatformInfo () {
+    const [version, osArch] = await Promise.all([
+      util.getOsVersionAsync(),
+      this.getRealArch(),
+    ])
+
+    return stripIndent`
+      Platform: ${os.platform()}-${osArch} (${version})
+      Cypress Version: ${util.pkgVersion()}
+    `
+  },
+
+  _cachedArch: undefined,
+
+  /**
+   * Attempt to return the real system arch (not process.arch, which is only the Node binary's arch)
+   */
+  async getRealArch () {
+    if (this._cachedArch) return this._cachedArch
+
+    async function _getRealArch () {
+      const osPlatform = os.platform()
+      // eslint-disable-next-line no-restricted-syntax
+      const osArch = os.arch()
+
+      debug('detecting arch %o', { osPlatform, osArch })
+
+      if (osArch === 'arm64') return 'arm64'
+
+      if (osPlatform === 'darwin') {
+        // could possibly be x64 node on arm64 darwin, check if we are being translated by Rosetta
+        // https://stackoverflow.com/a/65347893/3474615
+        const { stdout } = await execa('sysctl', ['-n', 'sysctl.proc_translated']).catch(() => '')
+
+        debug('rosetta check result: %o', { stdout })
+        if (stdout === '1') return 'arm64'
+      }
+
+      if (osPlatform === 'linux') {
+        // could possibly be x64 node on arm64 linux, check the "machine hardware name"
+        // list of names for reference: https://stackoverflow.com/a/45125525/3474615
+        const { stdout } = await execa('uname', ['-m']).catch(() => '')
+
+        debug('arm uname -m result: %o ', { stdout })
+        if (['aarch64_be', 'aarch64', 'armv8b', 'armv8l'].includes(stdout)) return 'arm64'
+      }
+
+      // eslint-disable-next-line no-restricted-syntax
+      const pkgArch = arch()
+
+      if (pkgArch === 'x86') return 'ia32'
+
+      return pkgArch
+    }
+
+    return (this._cachedArch = await _getRealArch())
   },
 
   // attention:
@@ -452,6 +519,7 @@ const util = {
     la(is.unemptyString(varName), 'expected environment variable name, not', varName)
 
     const configVarName = `npm_config_${varName}`
+    const configVarNameLower = configVarName.toLowerCase()
     const packageConfigVarName = `npm_package_config_${varName}`
 
     let result
@@ -464,6 +532,10 @@ const util = {
       debug(`Using ${varName} from npm config`)
 
       result = process.env[configVarName]
+    } else if (process.env.hasOwnProperty(configVarNameLower)) {
+      debug(`Using ${varName.toLowerCase()} from npm config`)
+
+      result = process.env[configVarNameLower]
     } else if (process.env.hasOwnProperty(packageConfigVarName)) {
       debug(`Using ${varName} from package.json config`)
 

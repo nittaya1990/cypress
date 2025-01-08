@@ -1,6 +1,6 @@
 require('../spec_helper')
 
-const Reporter = require(`${root}lib/reporter`)
+const Reporter = require(`../../lib/reporter`)
 const snapshot = require('snap-shot-it')
 
 describe('lib/reporter', () => {
@@ -109,9 +109,8 @@ describe('lib/reporter', () => {
     })
 
     it('recursively creates suites for fullTitle', function () {
-      const args = this.reporter.parseArgs('fail', [this.testObj])
+      const args = this.reporter.parseArgs('fail', this.testObj)
 
-      console.log(args)
       expect(args[0]).to.eq('fail')
 
       const title = 'TodoMVC - React When page is initially opened should focus on the todo input field'
@@ -140,7 +139,7 @@ describe('lib/reporter', () => {
     })
 
     it('emits start', function () {
-      this.reporter.emit('start')
+      this.reporter.emit('start', {})
       expect(this.emit).to.be.calledWith('start')
 
       expect(this.emit).to.be.calledOn(this.reporter.runner)

@@ -1,12 +1,15 @@
-// @ts-nocheck
-
 import _ from 'lodash'
 
-import * as $Clock from '../../cypress/clock'
+import { create as createClock, Clock } from '../../cypress/clock'
 import $errUtils from '../../cypress/error_utils'
 
+type CyClock = Clock & {
+  tick(ms, options?: any): number
+  restore(options?: any): void
+}
+
 // create a global clock
-let clock = null
+let clock: CyClock | null = null
 
 export default function (Commands, Cypress, cy, state) {
   const reset = () => {
@@ -26,7 +29,7 @@ export default function (Commands, Cypress, cy, state) {
   // this MUST be prepended else if we are stubbing or spying on
   // global timers they will be reset in agents before this runs
   // its reset function
-  Cypress.prependListener('test:before:run', reset)
+  Cypress.prependListener('test:before:after:run:async', reset)
 
   Cypress.on('window:before:load', (contentWindow) => {
     // if a clock has been created before this event (likely before
@@ -34,12 +37,14 @@ export default function (Commands, Cypress, cy, state) {
     if (clock) {
       return clock.bind(contentWindow)
     }
+
+    return
   })
 
   return Commands.addAll({ type: 'utility' }, {
-    clock (subject, now, methods, options = {}) {
+    clock (subject, now, methods, options: Partial<Cypress.Loggable> = {}) {
       let userOptions = options
-      const ctx = this
+      const ctx = state('ctx')
 
       if (clock) {
         return clock
@@ -71,12 +76,8 @@ export default function (Commands, Cypress, cy, state) {
         log: true,
       })
 
-      const log = (name, message, snapshot = true, consoleProps = {}) => {
-        if (!options.log) {
-          return
-        }
-
-        const details = clock.details()
+      const log = (name, shouldLog, message = '', snapshot = true, consoleProps = {}) => {
+        const details = clock!.details()
         const logNow = details.now
         const logMethods = details.methods.slice()
 
@@ -84,6 +85,7 @@ export default function (Commands, Cypress, cy, state) {
           name,
           message: message ? message : '',
           type: 'parent',
+          hidden: shouldLog === false,
           end: true,
           snapshot,
           consoleProps () {
@@ -95,11 +97,11 @@ export default function (Commands, Cypress, cy, state) {
         })
       }
 
-      clock = $Clock.create(state('window'), now, methods)
+      clock = createClock(state('window'), now, methods)
 
       const { tick } = clock
 
-      clock.tick = function (ms, options = {}) {
+      clock.tick = function (ms, userOptions: Partial<Cypress.Loggable> = {}) {
         if ((ms != null) && !_.isNumber(ms)) {
           $errUtils.throwErrByPath('tick.invalid_argument', { args: { arg: JSON.stringify(ms) } })
         }
@@ -108,14 +110,14 @@ export default function (Commands, Cypress, cy, state) {
           ms = 0
         }
 
-        let theLog
+        userOptions = _.defaults({}, userOptions, {
+          log: options.log,
+        })
 
-        if (options.log !== false) {
-          theLog = log('tick', `${ms}ms`, false, {
-            'Now': clock.details().now + ms,
-            'Ticked': `${ms} milliseconds`,
-          })
-        }
+        const theLog = log('tick', userOptions.log, `${ms}ms`, false, {
+          'Now': clock!.details().now + ms,
+          'Ticked': `${ms} milliseconds`,
+        })
 
         if (theLog) {
           theLog.snapshot('before', { next: 'after' })
@@ -132,12 +134,14 @@ export default function (Commands, Cypress, cy, state) {
 
       const { restore } = clock
 
-      clock.restore = function (options = {}) {
-        const ret = restore.apply(this, [options])
+      clock.restore = function (userOptions: Partial<Cypress.Loggable> = {}) {
+        const ret = restore.apply(this)
 
-        if (options.log !== false) {
-          log('restore')
-        }
+        userOptions = _.defaults({}, userOptions, {
+          log: options.log,
+        })
+
+        log('restore', userOptions.log)
 
         ctx.clock = null
 
@@ -148,7 +152,7 @@ export default function (Commands, Cypress, cy, state) {
         return ret
       }
 
-      log('clock')
+      log('clock', options.log)
 
       state('clock', clock)
 
@@ -157,12 +161,12 @@ export default function (Commands, Cypress, cy, state) {
       return clock
     },
 
-    tick (subject, ms, options = {}) {
+    tick (subject, ms, options: Partial<Cypress.Loggable> = {}) {
       if (!clock) {
         $errUtils.throwErrByPath('tick.no_clock')
       }
 
-      clock.tick(ms, options)
+      clock!.tick(ms, options)
 
       return clock
     },

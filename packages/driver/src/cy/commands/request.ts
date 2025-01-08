@@ -1,10 +1,10 @@
 import _ from 'lodash'
-import whatIsCircular from '@cypress/what-is-circular'
 import Promise from 'bluebird'
 
 import $utils from '../../cypress/utils'
 import $errUtils from '../../cypress/error_utils'
 import { $Location } from '../../cypress/location'
+import { whatIsCircular } from '../../util/what-is-circular'
 
 const isOptional = (memo, val, key) => {
   if (_.isNull(val)) {
@@ -28,6 +28,7 @@ const REQUEST_DEFAULTS = {
   timeout: null,
   followRedirect: true,
   failOnStatusCode: true,
+  retryIntervals: [0, 100, 200, 200],
   retryOnNetworkFailure: true,
   retryOnStatusCodeFailure: false,
 }
@@ -42,15 +43,24 @@ const hasFormUrlEncodedContentTypeHeader = (headers) => {
   return header && (_.toLower(header) === 'content-type')
 }
 
-const isValidJsonObj = (body) => {
-  return _.isObject(body) && !_.isFunction(body)
+const isValidBody = (body, isExplicitlyDefined: boolean = false) => {
+  return (_.isObject(body) || _.isBoolean(body) || (isExplicitlyDefined && _.isNull(body)))
+    && !_.isFunction(body)
 }
 
 const whichAreOptional = (val, key) => {
   return (val === null) && OPTIONAL_OPTS.includes(key)
 }
 
-const needsFormSpecified = (options = {}) => {
+const getDisplayUrl = (url: string) => {
+  if (url.startsWith(window.location.origin)) {
+    return url.slice(window.location.origin.length)
+  }
+
+  return url
+}
+
+const needsFormSpecified = (options: any = {}) => {
   const { body, json, headers } = options
 
   // json isn't true, and we have an object body and the user
@@ -58,17 +68,25 @@ const needsFormSpecified = (options = {}) => {
   return (json !== true) && _.isObject(body) && hasFormUrlEncodedContentTypeHeader(headers)
 }
 
+interface BackendError {
+  backend: boolean
+  message?: string
+  stack?: any
+}
+
 export default (Commands, Cypress, cy, state, config) => {
   Commands.addAll({
-    // allow our signature to be similar to cy.route
+    // allow our signature to be similar to cy.intercept
     // METHOD / URL / BODY
     // or object literal with all expanded options
     request (...args) {
-      const o = {}
+      const o: any = {}
       const userOptions = o
+      let bodyIsExplicitlyDefined = false
 
       if (_.isObject(args[0])) {
         _.extend(userOptions, args[0])
+        bodyIsExplicitlyDefined = _.has(args[0], 'body')
       } else if (args.length === 1) {
         o.url = args[0]
       } else if (args.length === 2) {
@@ -81,11 +99,13 @@ export default (Commands, Cypress, cy, state, config) => {
           // set url + body
           o.url = args[0]
           o.body = args[1]
+          bodyIsExplicitlyDefined = true
         }
       } else if (args.length === 3) {
         o.method = args[0]
         o.url = args[1]
         o.body = args[2]
+        bodyIsExplicitlyDefined = true
       }
 
       let options = _.defaults({}, userOptions, REQUEST_DEFAULTS, {
@@ -129,10 +149,22 @@ export default (Commands, Cypress, cy, state, config) => {
       // origin may return an empty string if we haven't visited anything yet
       options.url = $Location.normalize(options.url)
 
-      const originOrBase = config('baseUrl') || cy.getRemoteLocation('origin')
+      // If passed a relative url, determine the fully qualified URL to use.
+      // In the multi-origin version of the driver, we use originCommandBaseUrl,
+      // which is set to the origin that is associated with it.
+      // In the primary driver (where originCommandBaseUrl is undefined), we
+      // use the baseUrl or remote origin.
+      const originOrBase = Cypress.state('originCommandBaseUrl') || config('baseUrl') || cy.getRemoteLocation('origin')
 
       if (originOrBase) {
         options.url = $Location.qualifyWithBaseUrl(originOrBase, options.url)
+      }
+
+      // https://github.com/cypress-io/cypress/issues/19407
+      // Make generated querystring consistent with `URLSearchParams` class and cy.visit()
+      if (options.qs) {
+        options.url = $Location.mergeUrlWithParams(options.url, options.qs)
+        options.qs = null
       }
 
       // Make sure the url unicode characters are properly escaped
@@ -150,6 +182,7 @@ export default (Commands, Cypress, cy, state, config) => {
         $errUtils.throwErrByPath('request.url_invalid', {
           args: {
             configFile: Cypress.config('configFile'),
+            projectRoot: Cypress.config('projectRoot'),
           },
         })
       }
@@ -161,6 +194,7 @@ export default (Commands, Cypress, cy, state, config) => {
         $errUtils.throwErrByPath('request.url_invalid', {
           args: {
             configFile: Cypress.config('configFile'),
+            projectRoot: Cypress.config('projectRoot'),
           },
         })
       }
@@ -193,7 +227,7 @@ export default (Commands, Cypress, cy, state, config) => {
 
       // only set json to true if form isnt true
       // and we have a valid object for body
-      if ((options.form !== true) && isValidJsonObj(options.body)) {
+      if ((options.form !== true) && isValidBody(options.body, bodyIsExplicitlyDefined)) {
         options.json = true
       }
 
@@ -227,51 +261,50 @@ export default (Commands, Cypress, cy, state, config) => {
       // to the bare minimum to send to lib/request
       const requestOpts = _.pick(options, REQUEST_PROPS)
 
-      if (options.log) {
-        options._log = Cypress.log({
-          message: '',
-          timeout: options.timeout,
-          consoleProps () {
-            const resp = options.response || {}
-            let rr = resp.allRequestResponses || []
+      options._log = Cypress.log({
+        message: '',
+        hidden: options.log === false,
+        timeout: options.timeout,
+        consoleProps () {
+          const resp = options.response || {}
+          let rr = resp.allRequestResponses || []
 
-            const obj = {}
+          const obj = {}
 
-            const word = $utils.plural(rr.length, 'Requests', 'Request')
+          const word = $utils.plural(rr.length, 'Requests', 'Request')
 
-            // if we have only a single request/response then
-            // flatten this to an object, else keep as array
-            rr = rr.length === 1 ? rr[0] : rr
+          // if we have only a single request/response then
+          // flatten this to an object, else keep as array
+          rr = rr.length === 1 ? rr[0] : rr
 
-            obj[word] = rr
-            obj['Yielded'] = _.pick(resp, 'status', 'duration', 'body', 'headers')
+          obj[word] = rr
+          obj['Yielded'] = _.pick(resp, 'status', 'duration', 'body', 'headers')
 
-            return obj
-          },
+          return obj
+        },
 
-          renderProps () {
-            let indicator
-            let status
-            const r = options.response
+        renderProps () {
+          let indicator
+          let status
+          const r = options.response
 
-            if (r) {
-              status = r.status
-            } else {
-              indicator = 'pending'
-              status = '---'
-            }
+          if (r) {
+            status = r.status
+          } else {
+            indicator = 'pending'
+            status = '---'
+          }
 
-            if (!indicator) {
-              indicator = options.response?.isOkStatusCode ? 'successful' : 'bad'
-            }
+          if (!indicator) {
+            indicator = options.response?.isOkStatusCode ? 'successful' : 'bad'
+          }
 
-            return {
-              message: `${options.method} ${status} ${options.url}`,
-              indicator,
-            }
-          },
-        })
-      }
+          return {
+            message: `${options.method} ${status} ${getDisplayUrl(options.url)}`,
+            indicator,
+          }
+        },
+      })
 
       // need to remove the current timeout
       // because we're handling timeouts ourselves
@@ -297,7 +330,11 @@ export default (Commands, Cypress, cy, state, config) => {
 
           // reset content-type
           if (requestOpts.headers) {
-            delete requestOpts.headers[Object.keys(requestOpts).find((key) => key.toLowerCase() === 'content-type')]
+            const contentTypeKey = Object.keys(requestOpts).find((key) => key.toLowerCase() === 'content-type')
+
+            if (contentTypeKey) {
+              delete requestOpts.headers[contentTypeKey]
+            }
           } else {
             requestOpts.headers = {}
           }
@@ -308,7 +345,7 @@ export default (Commands, Cypress, cy, state, config) => {
 
           // socket.io ignores FormData.
           // So, we need to encode the data into base64 string format.
-          const formBody = []
+          const formBody: string[] = []
 
           requestOpts.body.forEach((value, key) => {
             // HTTP line break style is \r\n.
@@ -373,7 +410,7 @@ export default (Commands, Cypress, cy, state, config) => {
             timeout: options.timeout,
           },
         })
-      }).catch({ backend: true }, (err) => {
+      }).catch<void, BackendError>({ backend: true }, (err: BackendError) => {
         $errUtils.throwErrByPath('request.loading_failed', {
           onFail: options._log,
           args: {

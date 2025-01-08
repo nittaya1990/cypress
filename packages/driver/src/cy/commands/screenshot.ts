@@ -8,25 +8,51 @@ import $Screenshot from '../../cypress/screenshot'
 import $dom from '../../dom'
 import $errUtils from '../../cypress/error_utils'
 import $utils from '../../cypress/utils'
+import type { Log } from '../../cypress/log'
+import type { StateFunc } from '../../cypress/state'
 
-const getViewportHeight = (state) => {
+interface InternalScreenshotOptions extends Partial<Cypress.Loggable & Cypress.Timeoutable & Cypress.ScreenshotOptions> {
+  _log?: Log
+}
+
+type Scroll = {
+  y: number
+  clip?: Cypress.ScreenshotOptions['clip']
+  afterScroll?: () => Cypress.Dimensions
+}
+
+type TakeScreenshotOptions = {
+  name?: string
+  subject?: JQuery<HTMLElement>
+  simple?: boolean
+  testFailure?: boolean
+  runnable: (Mocha.Test | Mocha.Hook) & {
+    id: string
+  }
+  log?: Log
+  timeout?: number
+}
+
+type AutomationOptions = TakeScreenshotOptions & Omit<Cypress.ScreenshotOptions, 'onBeforeScreenshot'| 'onAfterScreenshot' | 'disableTimersAndAnimations' | 'scale' | 'padding'> & Partial<Cypress.ScreenshotOptions>
+
+const getViewportHeight = (state: StateFunc) => {
   // TODO this doesn't seem correct
   return Math.min(state('viewportHeight'), window.innerHeight)
 }
 
-const getViewportWidth = (state) => {
+const getViewportWidth = (state: StateFunc) => {
   return Math.min(state('viewportWidth'), window.innerWidth)
 }
 
-const automateScreenshot = (state, options = {}) => {
+const automateScreenshot = (state: StateFunc, options: TakeScreenshotOptions) => {
   const { runnable, timeout } = options
 
-  const titles = []
+  const titles: string[] = []
 
   // if this a hook then push both the current test title
   // and our own hook title
   if (runnable.type === 'hook') {
-    let ct = runnable.ctx.currentTest
+    let ct = runnable.ctx?.currentTest
 
     if (runnable.ctx && ct) {
       titles.push(ct.title, runnable.title)
@@ -55,6 +81,7 @@ const automateScreenshot = (state, options = {}) => {
     titles,
     testId: runnable.id,
     takenPaths: state('screenshotPaths'),
+    // @ts-ignore
     testAttemptIndex: $utils.getTestFromRunnable(runnable)._currentRetry,
   }, _.omit(options, 'runnable', 'timeout', 'log', 'subject'))
 
@@ -83,7 +110,7 @@ const automateScreenshot = (state, options = {}) => {
   })
 }
 
-const scrollOverrides = (win, doc) => {
+const scrollOverrides = (win: Window, doc: Document) => {
   const originalOverflow = doc.documentElement.style.overflow
   const originalBodyOverflowY = doc.body.style.overflowY
   const originalX = win.scrollX
@@ -97,13 +124,18 @@ const scrollOverrides = (win, doc) => {
   // hide scrollbars
   doc.documentElement.style.overflow = 'hidden'
 
+  // this body class is used to set some other overflow-related CSS
+  // around the resizable panels in the Runner
+  document.querySelector('body')?.classList.add('screenshot-scrolling')
+
   // in the case that an element might change size on scroll
   // we trigger a scroll event to ensure that all elements are
   // at their final size before we calculate the total height
   // since we scroll down the page in takeScrollingScreenshots
   // and don't want the page size to change once we start
   // https://github.com/cypress-io/cypress/issues/6099
-  win.dispatchEvent(new win.Event('scroll'))
+
+  win.dispatchEvent(new Event('scroll'))
 
   return () => {
     doc.documentElement.style.overflow = originalOverflow
@@ -111,11 +143,13 @@ const scrollOverrides = (win, doc) => {
       doc.body.style.overflowY = originalBodyOverflowY
     }
 
+    document.querySelector('body')?.classList.remove('screenshot-scrolling')
+
     return win.scrollTo(originalX, originalY)
   }
 }
 
-const validateNumScreenshots = (numScreenshots, automationOptions) => {
+const validateNumScreenshots = (numScreenshots: number, automationOptions: AutomationOptions) => {
   if (numScreenshots < 1) {
     $errUtils.throwErrByPath('screenshot.invalid_height', {
       log: automationOptions.log,
@@ -123,8 +157,8 @@ const validateNumScreenshots = (numScreenshots, automationOptions) => {
   }
 }
 
-const takeScrollingScreenshots = (scrolls, win, state, automationOptions) => {
-  const scrollAndTake = ({ y, clip, afterScroll }, index) => {
+const takeScrollingScreenshots = (scrolls: Scroll[], win: Window, state: StateFunc, automationOptions: AutomationOptions) => {
+  const scrollAndTake = ({ y, clip, afterScroll }: Scroll, index) => {
     win.scrollTo(0, y)
     if (afterScroll) {
       clip = afterScroll()
@@ -144,13 +178,17 @@ const takeScrollingScreenshots = (scrolls, win, state, automationOptions) => {
   .then(_.last)
 }
 
-const takeFullPageScreenshot = (state, automationOptions) => {
+const takeFullPageScreenshot = (state: StateFunc, automationOptions: AutomationOptions) => {
   const win = state('window')
   const doc = state('document')
 
+  if (!doc) {
+    return
+  }
+
   const resetScrollOverrides = scrollOverrides(win, doc)
 
-  const docHeight = $(doc).height()
+  const docHeight = $(doc).height() as number
   const viewportHeight = getViewportHeight(state)
   const numScreenshots = Math.ceil(docHeight / viewportHeight)
 
@@ -180,11 +218,12 @@ const takeFullPageScreenshot = (state, automationOptions) => {
   .finally(resetScrollOverrides)
 }
 
-const applyPaddingToElementPositioning = (elPosition, automationOptions) => {
+const applyPaddingToElementPositioning = (elPosition: Cypress.ElementPositioning, automationOptions: AutomationOptions) => {
   if (!automationOptions.padding) {
     return elPosition
   }
 
+  // @ts-ignore
   const [paddingTop, paddingRight, paddingBottom, paddingLeft] = automationOptions.padding
 
   return {
@@ -201,9 +240,13 @@ const applyPaddingToElementPositioning = (elPosition, automationOptions) => {
   }
 }
 
-const takeElementScreenshot = ($el, state, automationOptions) => {
+const takeElementScreenshot = ($el: JQuery<HTMLElement>, state: StateFunc, automationOptions: AutomationOptions) => {
   const win = state('window')
   const doc = state('document')
+
+  if (!doc) {
+    return
+  }
 
   const resetScrollOverrides = scrollOverrides(win, doc)
 
@@ -217,7 +260,7 @@ const takeElementScreenshot = ($el, state, automationOptions) => {
 
   validateNumScreenshots(numScreenshots, automationOptions)
 
-  const scrolls = _.map(_.times(numScreenshots), (index) => {
+  const scrolls: Scroll[] = _.map(_.times(numScreenshots), (index) => {
     const y = elPosition.fromElWindow.top + (viewportHeight * index)
 
     const afterScroll = () => {
@@ -267,19 +310,30 @@ const takeElementScreenshot = ($el, state, automationOptions) => {
 }
 
 // "app only" means we're hiding the runner UI
-const isAppOnly = ({ capture }) => {
+const isAppOnly = ({ capture }: { capture: Cypress.ScreenshotOptions['capture']}) => {
   return (capture === 'viewport') || (capture === 'fullPage')
 }
 
-const getShouldScale = ({ capture, scale }) => {
+const getShouldScale = ({ capture, scale }: {
+  capture: Cypress.ScreenshotOptions['capture']
+  scale: Cypress.ScreenshotOptions['scale']
+}) => {
   return isAppOnly({ capture }) ? scale : true
 }
 
-const getBlackout = ({ capture, blackout }) => {
+const getBlackout = ({ capture, blackout }: {
+  capture: Cypress.ScreenshotOptions['capture']
+  blackout: Cypress.ScreenshotOptions['blackout']
+}) => {
   return isAppOnly({ capture }) ? blackout : []
 }
 
-const takeScreenshot = (Cypress, state, screenshotConfig, options = {}) => {
+const takeScreenshot = (
+  Cypress: Cypress.Cypress,
+  state: StateFunc,
+  screenshotConfig: Partial<Cypress.ScreenshotOptions> & Pick<Cypress.ScreenshotOptions, 'capture' | 'scale' | 'blackout' | 'overwrite'>,
+  options: TakeScreenshotOptions,
+) => {
   const {
     capture,
     padding,
@@ -294,7 +348,8 @@ const takeScreenshot = (Cypress, state, screenshotConfig, options = {}) => {
 
   const startTime = new Date()
 
-  const send = (event, props, resolve) => {
+  // TODO: is this ok to make `resolve` undefined?
+  const send = (event, props, resolve?) => {
     Cypress.action(`cy:${event}`, props, resolve)
   }
 
@@ -307,7 +362,8 @@ const takeScreenshot = (Cypress, state, screenshotConfig, options = {}) => {
   const getOptions = (isOpen) => {
     return {
       id: runnable.id,
-      testAttemptIndex: $utils.getTestFromRunnable(runnable)._currentRetry,
+      // @ts-ignore
+      testAttemptIndex: $utils.getTestFromRunnable(runnable)?._currentRetry,
       isOpen,
       appOnly: isAppOnly(screenshotConfig),
       scale: getShouldScale(screenshotConfig),
@@ -318,28 +374,62 @@ const takeScreenshot = (Cypress, state, screenshotConfig, options = {}) => {
     }
   }
 
-  const before = () => {
+  const before = ($body: JQuery<HTMLBodyElement>, $container: JQuery<HTMLElement>) => {
     return Promise.try(() => {
       if (disableTimersAndAnimations) {
         return cy.pauseTimers(true)
       }
+
+      return null
     })
     .then(() => {
+      // could fail if iframe is cross-origin, so fail gracefully
+      try {
+        if (disableTimersAndAnimations) {
+          $dom.addCssAnimationDisabler($body)
+        }
+
+        _.each(getBlackout(screenshotConfig), (selector) => {
+          $dom.addBlackouts($body, $container, selector)
+        })
+      } catch (err) {
+        /* eslint-disable no-console */
+        console.error('Failed to modify app dom:')
+        console.error(err)
+        /* eslint-enable no-console */
+      }
+
       return sendAsync('before:screenshot', getOptions(true))
     })
   }
 
-  const after = () => {
+  const after = ($body: JQuery<HTMLBodyElement>) => {
+    // could fail if iframe is cross-origin, so fail gracefully
+    try {
+      if (disableTimersAndAnimations) {
+        $dom.removeCssAnimationDisabler($body)
+      }
+
+      $dom.removeBlackouts($body)
+    } catch (err) {
+      /* eslint-disable no-console */
+      console.error('Failed to modify app dom:')
+      console.error(err)
+      /* eslint-enable no-console */
+    }
+
     send('after:screenshot', getOptions(false))
 
     return Promise.try(() => {
       if (disableTimersAndAnimations) {
         return cy.pauseTimers(false)
       }
+
+      return null
     })
   }
 
-  const automationOptions = _.extend({}, options, {
+  const automationOptions: AutomationOptions = _.extend({}, options, {
     capture,
     clip: {
       x: 0,
@@ -357,14 +447,20 @@ const takeScreenshot = (Cypress, state, screenshotConfig, options = {}) => {
     blackout: getBlackout(screenshotConfig),
     overwrite,
     startTime: startTime.toISOString(),
+    appOnly: isAppOnly(screenshotConfig),
+    hideRunnerUi: Cypress.config('hideRunnerUi'),
   })
 
   // use the subject as $el or yield the wrapped documentElement
-  const $el = $dom.isElement(subject)
+  const $el: JQuery<HTMLElement> = $dom.isElement(subject)
     ? subject
-    : $dom.wrap(state('document').documentElement)
+    : $dom.wrap(state('document')?.documentElement)
 
-  return before()
+  // get the current body of the AUT to accurately calculate screenshot blackouts
+  // as well as properly enable/disable CSS animations while screenshotting is happening
+  const $body: JQuery<HTMLBodyElement> = Cypress.$('body')
+
+  return before($body, $el)
   .then(() => {
     if (onBeforeScreenshot) {
       onBeforeScreenshot.call(state('ctx'), $el)
@@ -391,7 +487,7 @@ const takeScreenshot = (Cypress, state, screenshotConfig, options = {}) => {
 
     return props
   })
-  .finally(after)
+  .finally(() => after($body))
 }
 
 export default function (Commands, Cypress, cy, state, config) {
@@ -410,23 +506,24 @@ export default function (Commands, Cypress, cy, state, config) {
     }
 
     // if a screenshot has not been taken (by cy.screenshot()) in the test
-    // that failed, we can bypass UI-changing and pixel-checking (simple: true)
-    // otheriwse, we need to do all the standard checks
+    // that failed and the runner is not hidden, we can bypass
+    // UI-changing and pixel-checking (simple: true)
+    // otherwise, we need to do all the standard checks
     // to make sure the UI is in the right place (simple: false)
+    const simple = !state('screenshotTaken') && !config('hideRunnerUi')
+
     screenshotConfig.capture = 'runner'
 
     return takeScreenshot(Cypress, state, screenshotConfig, {
       runnable,
-      simple: !state('screenshotTaken'),
+      simple,
       testFailure: true,
       timeout: config('responseTimeout'),
     })
   })
 
   Commands.addAll({ prevSubject: ['optional', 'element', 'window', 'document'] }, {
-    screenshot (subject, name, options = {}) {
-      let userOptions = options
-
+    screenshot (subject, name, userOptions: Partial<Cypress.Loggable & Cypress.Timeoutable & Cypress.ScreenshotOptions> = {}) {
       if (_.isObject(name)) {
         userOptions = name
         name = null
@@ -435,10 +532,10 @@ export default function (Commands, Cypress, cy, state, config) {
       // make sure when we capture the entire test runner
       // we are not limited to "within" subject
       // https://github.com/cypress-io/cypress/issues/14253
-      if (options.capture !== 'runner') {
-        const withinSubject = state('withinSubject')
+      if (userOptions.capture !== 'runner') {
+        const withinSubject = cy.getSubjectFromChain(cy.state('withinSubjectChain'))
 
-        if (withinSubject && $dom.isElement(withinSubject)) {
+        if ($dom.isElement(withinSubject)) {
           subject = withinSubject
         }
       }
@@ -446,14 +543,14 @@ export default function (Commands, Cypress, cy, state, config) {
       // TODO: handle hook titles
       const runnable = state('runnable')
 
-      options = _.defaults({}, userOptions, {
+      const options: InternalScreenshotOptions = _.defaults({}, userOptions, {
         log: true,
         timeout: config('responseTimeout'),
       })
 
       const isWin = $dom.isWindow(subject)
 
-      let screenshotConfig = _.pick(options, 'capture', 'scale', 'disableTimersAndAnimations', 'overwrite', 'blackout', 'waitForCommandSynchronization', 'padding', 'clip', 'onBeforeScreenshot', 'onAfterScreenshot')
+      let screenshotConfig: any = _.pick(options, 'capture', 'scale', 'disableTimersAndAnimations', 'overwrite', 'blackout', 'waitForCommandSynchronization', 'padding', 'clip', 'onBeforeScreenshot', 'onAfterScreenshot')
 
       screenshotConfig = $Screenshot.validate(screenshotConfig, 'screenshot', options._log)
       screenshotConfig = _.extend($Screenshot.getConfig(), screenshotConfig)
@@ -471,15 +568,14 @@ export default function (Commands, Cypress, cy, state, config) {
         consoleProps.name = name
       }
 
-      if (options.log) {
-        options._log = Cypress.log({
-          message: name,
-          timeout: options.timeout,
-          consoleProps () {
-            return consoleProps
-          },
-        })
-      }
+      options._log = Cypress.log({
+        hidden: !options.log,
+        message: name,
+        timeout: options.timeout,
+        consoleProps () {
+          return { props: consoleProps }
+        },
+      })
 
       if (!isWin && subject && subject.length > 1) {
         $errUtils.throwErrByPath('screenshot.multiple_elements', {

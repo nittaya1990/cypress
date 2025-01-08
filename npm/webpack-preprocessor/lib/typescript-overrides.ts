@@ -17,11 +17,20 @@ export const overrideSourceMaps = (sourceMap: boolean, typescriptPath?: string) 
       return
     }
 
-    const typescript = require(typescriptPath || 'typescript') as typeof import('typescript')
+    // when using webpack-preprocessor as a local filesystem dependency (`file:...`),
+    // require(typescript) will resolve to this repo's `typescript` devDependency, not the
+    // targeted project's `typescript`, which breaks monkeypatching. resolving from the
+    // CWD avoids this issue.
+    const projectTsPath = require.resolve(typescriptPath || 'typescript', {
+      paths: [process.cwd()],
+    })
+
+    const typescript = require(projectTsPath) as typeof import('typescript')
     const { createProgram } = typescript
 
     debug('typescript found, overriding typescript.createProgram()')
-
+    // NOTE: typescript.createProgram is only called in typescript versions 4 and under
+    // For Typescript 5, please see the @cypress/webpack-batteries-included-preprocessor package
     typescript.createProgram = (...args: any[]) => {
       const [rootNamesOrOptions, _options] = args
       const options = getProgramOptions(rootNamesOrOptions, _options)

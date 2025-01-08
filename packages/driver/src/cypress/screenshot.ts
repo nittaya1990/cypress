@@ -1,19 +1,18 @@
-// @ts-nocheck
-
 import _ from 'lodash'
 
 import $utils from './utils'
 import $errUtils from './error_utils'
 
-const _reset = () => {
+const _reset = (): Pick<Cypress.ScreenshotDefaultsOptions, 'capture' | 'scale' | 'disableTimersAndAnimations' | 'screenshotOnRunFailure' | 'blackout' | 'overwrite' | 'onBeforeScreenshot' | 'onAfterScreenshot'> => {
   return {
     capture: 'fullPage',
     scale: false,
     disableTimersAndAnimations: true,
     screenshotOnRunFailure: true,
     blackout: [],
-    onBeforeScreenshot () {},
-    onAfterScreenshot () {},
+    overwrite: false,
+    onBeforeScreenshot ($el) {},
+    onAfterScreenshot ($el, results) {},
   }
 }
 
@@ -110,8 +109,8 @@ const validateAndSetCallback = (props, values, cmd, log, option) => {
   values[option] = value
 }
 
-const validate = (props, cmd, log) => {
-  const values = {}
+const validate = (props, cmd, log?) => {
+  const values: Record<string, any> = {}
 
   if (!_.isPlainObject(props)) {
     $errUtils.throwErrByPath('screenshot.invalid_arg', {

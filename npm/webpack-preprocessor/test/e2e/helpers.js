@@ -83,7 +83,7 @@ exports.runTest = async (options = {}) => {
     VIDEO_COMPRESSION_THROTTLE: 120000,
 
     // don't fail our own tests running from forked PR's
-    CYPRESS_INTERNAL_E2E_TESTS: '1',
+    CYPRESS_INTERNAL_SYSTEM_TESTS: '1',
     CYPRESS_ENV: 'test',
   })
 
@@ -91,9 +91,6 @@ exports.runTest = async (options = {}) => {
     spec: opts.spec,
     browser: opts.browser,
     exit: opts.exit,
-    config: {
-      video: false,
-    },
     dev: true,
   })
   .finally(() => {
@@ -111,7 +108,6 @@ exports.runTest = async (options = {}) => {
       })
     }
 
-    // console.log(stdout)
     console.log(`${chalk.bold('run matched these results:')} ${JSON.stringify(opts.expectedResults, null, 2)}`)
   })
 }

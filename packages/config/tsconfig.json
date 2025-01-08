@@ -1,0 +1,18 @@
+{
+  "extends": "../ts/tsconfig.json",
+  "include": [
+    "src/*.ts"
+  ],
+  "exclude": [
+    "test"
+  ],
+  "compilerOptions": {
+    "allowJs": false,
+    "rootDir": "src",
+    "noImplicitAny": true,
+    "types": ["node"],
+    "typeRoots": [
+      "../../node_modules/@types"
+    ],
+  }
+}

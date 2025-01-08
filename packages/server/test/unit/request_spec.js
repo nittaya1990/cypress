@@ -3,7 +3,7 @@ require('../spec_helper')
 const _ = require('lodash')
 const http = require('http')
 const Bluebird = require('bluebird')
-const Request = require(`${root}lib/request`)
+const Request = require(`../../lib/request`)
 const snapshot = require('snap-shot-it')
 
 const request = Request({ timeout: 100 })
@@ -66,12 +66,12 @@ describe('lib/request', () => {
         code: 'ECONNREFUSED',
       }
 
-      const onNext = sinon.stub()
+      const retryFn = sinon.stub()
 
       retryIntervals.forEach(() => {
         return request.getDelayForRetry({
           err,
-          onNext,
+          retryFn,
           retryIntervals,
           delaysRemaining,
         })
@@ -79,11 +79,11 @@ describe('lib/request', () => {
 
       expect(delaysRemaining).to.be.empty
 
-      expect(onNext.args).to.deep.eq([
-        [0, 1],
-        [999, 2],
-        [100, 3],
-        [200, 4],
+      expect(retryFn.args).to.deep.eq([
+        [{ delay: 0, attempt: 1 }],
+        [{ delay: 999, attempt: 2 }],
+        [{ delay: 100, attempt: 3 }],
+        [{ delay: 200, attempt: 4 }],
       ])
     })
 
@@ -95,37 +95,37 @@ describe('lib/request', () => {
         code: 'ECONNRESET',
       }
 
-      const onNext = sinon.stub()
+      const retryFn = sinon.stub()
 
       request.getDelayForRetry({
         err,
-        onNext,
+        retryFn,
         retryIntervals,
         delaysRemaining,
       })
 
       expect(delaysRemaining).to.have.length(3)
 
-      expect(onNext).to.be.calledWith(2000, 1)
+      expect(retryFn).to.be.calledWith({ delay: 2000, attempt: 1 })
     })
 
-    it('calls onElse when delaysRemaining is exhausted', () => {
+    it('calls onEnd when delaysRemaining is exhausted', () => {
       const retryIntervals = [1, 2, 3, 4]
       const delaysRemaining = []
 
-      const onNext = sinon.stub()
-      const onElse = sinon.stub()
+      const retryFn = sinon.stub()
+      const onEnd = sinon.stub()
 
       request.getDelayForRetry({
-        onElse,
-        onNext,
+        onEnd,
+        retryFn,
         retryIntervals,
         delaysRemaining,
       })
 
-      expect(onElse).to.be.calledWithExactly()
+      expect(onEnd).to.be.calledWithExactly()
 
-      expect(onNext).not.to.be.called
+      expect(retryFn).not.to.be.called
     })
   })
 
@@ -141,10 +141,10 @@ describe('lib/request', () => {
       expect(opts.delaysRemaining).to.deep.eq(retryIntervals)
     })
 
-    it('retryIntervals to [0, 1000, 2000, 2000] by default', () => {
+    it('retryIntervals to [] by default', () => {
       const opts = request.setDefaults({})
 
-      expect(opts.retryIntervals).to.deep.eq([0, 1000, 2000, 2000])
+      expect(opts.retryIntervals).to.deep.eq([])
     })
 
     it('delaysRemaining can be overridden', () => {
@@ -389,7 +389,7 @@ describe('lib/request', () => {
         'Content-Type': 'text/html',
       })
 
-      return request.sendPromise({}, this.fn, {
+      return request.sendPromise(undefined, this.fn, {
         url: 'http://www.github.com/foo',
         cookies: false,
         body: 'foobarbaz',
@@ -441,7 +441,7 @@ describe('lib/request', () => {
         'Content-Type': 'text/html',
       })
 
-      return request.sendPromise({}, this.fn, {
+      return request.sendPromise(undefined, this.fn, {
         url: 'http://www.github.com/dashboard',
         cookies: false,
       })
@@ -583,11 +583,7 @@ describe('lib/request', () => {
       .get('/foo')
       .reply(200, 'derp')
 
-      const headers = {}
-
-      headers['user-agent'] = 'foobarbaz'
-
-      return request.sendPromise(headers, this.fn, {
+      return request.sendPromise('foobarbaz', this.fn, {
         url: 'http://localhost:8080/foo',
         cookies: false,
       })
@@ -937,6 +933,64 @@ describe('lib/request', () => {
           expect(resp.body).to.eq('<html></html>')
 
           expect(init).not.to.be.calledWithMatch({ json: true })
+        })
+      })
+    })
+
+    // https://github.com/cypress-io/cypress/issues/28789
+    context('json=true', () => {
+      beforeEach(() => {
+        nock('http://localhost:8080')
+        .matchHeader('Content-Type', 'application/json')
+        .post('/login')
+        .reply(200, '<html></html>')
+      })
+
+      it('does not modify regular JSON objects', function () {
+        const init = sinon.spy(request.rp.Request.prototype, 'init')
+        const body = {
+          foo: 'bar',
+        }
+
+        return request.sendPromise({}, this.fn, {
+          url: 'http://localhost:8080/login',
+          method: 'POST',
+          cookies: false,
+          json: true,
+          body,
+        })
+        .then(() => {
+          expect(init).to.be.calledWithMatch({ body })
+        })
+      })
+
+      it('converts boolean JSON literals to strings', function () {
+        const init = sinon.spy(request.rp.Request.prototype, 'init')
+
+        return request.sendPromise({}, this.fn, {
+          url: 'http://localhost:8080/login',
+          method: 'POST',
+          cookies: false,
+          json: true,
+          body: true,
+        })
+        .then(() => {
+          expect(init).to.be.calledWithMatch({ body: 'true' })
+        })
+      })
+
+      it('converts null JSON literals to \'null\'', function () {
+        const init = sinon.spy(request.rp.Request.prototype, 'init')
+
+        return request.sendPromise({}, this.fn, {
+          url: 'http://localhost:8080/login',
+          method: 'POST',
+          cookies: false,
+          json: true,
+          body: null,
+        })
+        .then(() => {
+          expect(init).to.be.calledWithMatch({ body: 'null' })
         })
       })
     })
